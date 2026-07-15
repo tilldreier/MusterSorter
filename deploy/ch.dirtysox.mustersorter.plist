@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent (NICHT LaunchDaemon!) fuer den Muster-Sorter-Dauerbetrieb auf
+  dem Mac Mini - siehe freisteller/deploy/ch.dirtysox.freisteller3.plist fuer
+  die ausfuehrliche Begruendung (LaunchAgent statt LaunchDaemon wegen
+  OneDrive-Zugriff aus der GUI-Session; Bash-Wrapper wegen posix_spawn-
+  Restriktion fuer LaunchAgent-ProgramArguments).
+
+  Installation (einmalig, auf dem Mac Mini, OHNE sudo, als der Nutzer selbst):
+    cp ch.dirtysox.mustersorter.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ch.dirtysox.mustersorter.plist
+
+  Neustart nach einem Deploy/Update (z.B. nach "git pull"):
+    launchctl kickstart -k gui/$(id -u)/ch.dirtysox.mustersorter
+
+  WICHTIG: Die Pfade unten (/Users/REPLACE_ME/... und /Users/REPLACE_ME_HOME)
+  muessen an den tatsaechlichen Pfad bzw. Home-Verzeichnis auf dem Mac Mini
+  angepasst werden, bevor die Datei installiert wird.
+
+  WICHTIG 2 (siehe freisteller-Projekt): Label UND StandardOutPath/
+  StandardErrorPath-Dateinamen scheinen durch wiederholtes bootout/bootstrap
+  desselben LaunchAgents mit der Zeit "verschlissen" zu werden und dann
+  OneDrive-Schreibzugriffe dauerhaft zu blockieren. Bei Testverdacht: auf ein
+  komplett neues Label + neue Log-Dateinamen wechseln
+  (ch.dirtysox.mustersorter2 usw.), nicht am Produktiv-Label rumprobieren.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.dirtysox.mustersorter</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/REPLACE_ME/muster-sorter/deploy/run.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/REPLACE_ME/muster-sorter</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/REPLACE_ME_HOME</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/REPLACE_ME/muster-sorter/deploy/mustersorter.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/REPLACE_ME/muster-sorter/deploy/mustersorter.err.log</string>
+</dict>
+</plist>

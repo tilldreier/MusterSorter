@@ -1,0 +1,20 @@
+{
+  "client_id": "",
+  "tenant_id": "",
+  "client_secret": "",
+  "mailbox": "sales@dirtysox.ch",
+  "sharepoint_base": "/path/to/OneDrive-mounted/DirtySox GmbH - Dokumente",
+  "staging_dir": "/path/to/muster-sorter/eingang",
+  "sender_filter": "maskova@rotexponozky.cz",
+  "clickup_api_token": "",
+  "clickup_list_id": "",
+  "clickup_status_candidate": "Muster Bestellt",
+  "clickup_status_done": "Muster Erhalten",
+  "clickup_field_rotex_nummer": "",
+  "clickup_field_sharepoint": "aa14bc44-2b79-4519-9af7-177fbe92e51f",
+  "clickup_field_email": "fa397871-91d2-4009-a562-84d0545565c6",
+  "anthropic_api_key": "",
+  "sender_from_address": "custom@dirtysox.ch",
+  "public_base_url": "https://muster.dirtysox.ch",
+  "internal_fetch_secret": ""
+}

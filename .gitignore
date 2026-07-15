@@ -1,0 +1,11 @@
+# Secrets und lokale Betriebsdaten
+config.json
+.token_cache.json
+state.json
+eingang/
+.venv/
+deploy/*.log
+
+__pycache__/
+*.pyc
+.DS_Store

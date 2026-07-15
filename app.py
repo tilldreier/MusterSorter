@@ -1,0 +1,304 @@
+"""
+Review-Oberflaeche fuer Musterfotos vom Strumpfhersteller (Rotex).
+
+Start:  .venv/bin/python app.py
+Dann im Browser: http://127.0.0.1:5153
+
+Ablauf:
+1. "Neue Mails abrufen" holt neue Mustermails von maskova@rotexponozky.cz
+   aus sales@dirtysox.ch und laedt die JPG-Anhaenge herunter.
+2. Fuer jedes neue Foto wird automatisch ein Matching-Vorschlag berechnet
+   (zuerst exakte Rotex-Nummer, sonst KI-Bildvergleich).
+3. Pro Foto: Vorschlag pruefen/aendern (durchsuchbare Liste aller "Muster
+   Bestellt"-Tasks als Fallback) und bestaetigen, oder das Foto ignorieren.
+   Bei Bestaetigung: Anhang hochladen, Rotex-Nummer-Feld setzen, Status auf
+   "Muster Erhalten", Kopie nach SharePoint, Kunden-Mail versenden.
+"""
+
+import hmac
+import json
+import os
+import threading
+
+from flask import Flask, abort, jsonify, redirect, render_template_string, request, send_file, url_for
+
+import clickup_ops
+import fetch
+import mail_send
+import matching
+import state
+
+app = Flask(__name__)
+
+
+def _load_config():
+    cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+CFG = _load_config()
+os.makedirs(CFG["staging_dir"], exist_ok=True)
+
+# Wie beim Freisteller Sorter: fetch.run() (Mail-Abruf) und die anschliessende
+# Vorschlags-Berechnung (KI-Bildvergleich, kann ein paar Sekunden dauern)
+# duerfen keinen HTTP-Request/Worker blockieren - deshalb im Hintergrund-Thread.
+_fetch_lock = threading.Lock()
+
+
+def _generate_suggestions():
+    """Berechnet fuer alle Fotos ohne Vorschlag den Matching-Vorschlag und
+    speichert ihn in state.json - laeuft nach fetch.run() im selben
+    Hintergrund-Thread."""
+    api_key = CFG.get("anthropic_api_key")
+    for batch_id, batch in state.get_batches().items():
+        if batch.get("status") == "done":
+            continue
+        for filename, photo in batch["photos"].items():
+            if photo["status"] != "pending" or photo.get("suggestion"):
+                continue
+            try:
+                suggestion = matching.suggest_match(photo["path"], batch.get("rotex_nummer"), api_key)
+            except Exception as exc:
+                print(f"[WARN] Matching fehlgeschlagen fuer {batch_id}/{filename}: {exc}")
+                suggestion = None
+            if suggestion:
+                state.set_photo_suggestion(batch_id, filename, suggestion)
+
+
+def _run_fetch_in_background():
+    if not _fetch_lock.acquire(blocking=False):
+        print("[INFO] Fetch laeuft bereits - ueberspringe diesen Trigger.")
+        return
+    try:
+        fetch.run()
+        _generate_suggestions()
+    except Exception as exc:
+        print(f"[FEHLER] Hintergrund-Fetch fehlgeschlagen: {exc}")
+    finally:
+        _fetch_lock.release()
+
+
+INDEX_TEMPLATE = """
+<!doctype html>
+<html><head><title>Muster Sorter</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; }
+  .batch { border: 1px solid #ddd; border-radius: 8px; padding: 1em; margin-bottom: 1em; }
+  .batch h3 { margin: 0 0 0.3em 0; }
+  .meta { color: #666; font-size: 0.9em; }
+  a.button, button { display: inline-block; background: #00a0e3; color: white; border: none;
+    padding: 0.6em 1.2em; border-radius: 6px; text-decoration: none; cursor: pointer; font-size: 1em; }
+</style></head>
+<body>
+<h1>Muster Sorter</h1>
+<form method="post" action="{{ url_for('do_fetch') }}">
+  <button type="submit">Neue Mails abrufen</button>
+</form>
+{% if fetch_message %}<p><strong>{{ fetch_message }}</strong></p>{% endif %}
+<h2>Offene Musterfotos</h2>
+{% if not open_batches %}<p>Keine offenen Musterfotos - alles einsortiert.</p>{% endif %}
+{% for batch_id, b in open_batches %}
+  <div class="batch">
+    <h3><a href="{{ url_for('batch_detail', batch_id=batch_id) }}">{{ b.subject }}</a></h3>
+    <div class="meta">{{ b.received }} - Rotex-Nr.: {{ b.rotex_nummer or "unbekannt" }} -
+      {{ pending_counts[batch_id] }} noch offen</div>
+  </div>
+{% endfor %}
+</body></html>
+"""
+
+BATCH_TEMPLATE = """
+<!doctype html>
+<html><head><title>Batch {{ batch_id }}</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 1000px; margin: 2em auto; padding: 0 1em; }
+  .photo { border: 2px solid #ddd; border-radius: 8px; padding: 1em; margin-bottom: 1em; }
+  .photo img { max-width: 320px; max-height: 320px; object-fit: contain; float: left; margin-right: 1.5em; }
+  .suggestion { background: #eaf7ff; border-radius: 6px; padding: 0.6em 1em; margin-bottom: 0.8em; }
+  .suggestion.none { background: #fff3e0; }
+  input[list] { padding: 0.4em; min-width: 260px; }
+  .actions { margin-top: 0.8em; }
+  .actions button { margin-right: 0.6em; }
+  button.ignore { background: #999; }
+  .clear { clear: both; }
+</style>
+</head>
+<body>
+<p><a href="{{ url_for('index') }}">&larr; zurueck</a></p>
+<h1>{{ batch.subject }}</h1>
+<p class="meta">{{ batch.received }} - Rotex-Nr.: {{ batch.rotex_nummer or "unbekannt" }}</p>
+
+{% for filename, photo in pending_photos %}
+  <div class="photo">
+    <img src="{{ url_for('photo_image', batch_id=batch_id, filename=filename) }}">
+    {% if photo.suggestion and photo.suggestion.task_id %}
+      <div class="suggestion">
+        <strong>Vorschlag:</strong> {{ photo.suggestion.task_name }}
+        ({{ photo.suggestion.source }}, Confidence: {{ photo.suggestion.confidence }})<br>
+        <small>{{ photo.suggestion.reasoning }}</small>
+      </div>
+    {% elif photo.suggestion %}
+      <div class="suggestion none">
+        <strong>Kein automatischer Treffer.</strong>
+        <small>{{ photo.suggestion.reasoning }}</small>
+      </div>
+    {% endif %}
+    <form method="post" action="{{ url_for('assign_photo', batch_id=batch_id, filename=filename) }}">
+      Task waehlen:
+      <input name="task_id" list="tasks_{{ filename }}"
+             value="{{ photo.suggestion.task_id if photo.suggestion else '' }}"
+             placeholder="Task-ID oder aus Liste waehlen">
+      <datalist id="tasks_{{ filename }}">
+        {% for t in candidate_tasks %}
+          <option value="{{ t.id }}">{{ t.name }}</option>
+        {% endfor %}
+      </datalist>
+      <div class="actions">
+        <button type="submit">Bestaetigen &amp; einsortieren</button>
+        <button type="submit" formaction="{{ url_for('ignore_photo', batch_id=batch_id, filename=filename) }}"
+                class="ignore">Muster ignorieren</button>
+      </div>
+    </form>
+    <div class="clear"></div>
+  </div>
+{% endfor %}
+</body></html>
+"""
+
+
+def _open_batches():
+    batches = state.get_batches()
+    return sorted(
+        ((bid, b) for bid, b in batches.items() if b.get("status") != "done"),
+        key=lambda kv: kv[1].get("received", ""),
+        reverse=True,
+    )
+
+
+def _pending_photos(batch):
+    return [(name, p) for name, p in batch["photos"].items() if p["status"] == "pending"]
+
+
+@app.route("/")
+def index():
+    open_batches = _open_batches()
+    pending_counts = {bid: len(_pending_photos(b)) for bid, b in open_batches}
+    return render_template_string(
+        INDEX_TEMPLATE,
+        open_batches=open_batches,
+        pending_counts=pending_counts,
+        fetch_message=request.args.get("msg"),
+    )
+
+
+@app.route("/fetch", methods=["POST"])
+def do_fetch():
+    if _fetch_lock.locked():
+        msg = "Es laeuft bereits ein Abruf im Hintergrund - bitte kurz warten."
+    else:
+        threading.Thread(target=_run_fetch_in_background, daemon=True).start()
+        msg = "Abruf gestartet - neue Musterfotos erscheinen hier, sobald sie fertig sind."
+    return redirect(url_for("index", msg=msg))
+
+
+@app.route("/internal/fetch", methods=["POST"])
+def internal_fetch():
+    expected_secret = CFG.get("internal_fetch_secret") or ""
+    provided_secret = request.headers.get("X-Internal-Secret", "")
+    if not expected_secret or not hmac.compare_digest(provided_secret, expected_secret):
+        abort(401)
+
+    if _fetch_lock.locked():
+        return jsonify({"ok": True, "status": "already_running"})
+
+    threading.Thread(target=_run_fetch_in_background, daemon=True).start()
+    return jsonify({"ok": True, "status": "started"})
+
+
+@app.route("/batch/<batch_id>")
+def batch_detail(batch_id):
+    batch = state.get_batch(batch_id)
+    if not batch:
+        return "Batch nicht gefunden", 404
+    candidate_tasks = matching.get_candidates()
+    return render_template_string(
+        BATCH_TEMPLATE,
+        batch_id=batch_id,
+        batch=batch,
+        pending_photos=_pending_photos(batch),
+        candidate_tasks=candidate_tasks,
+    )
+
+
+@app.route("/photo/<batch_id>/<filename>")
+def photo_image(batch_id, filename):
+    batch = state.get_batch(batch_id)
+    if not batch:
+        return "not found", 404
+    photo = batch["photos"].get(filename)
+    if not photo:
+        return "not found", 404
+    return send_file(photo["path"])
+
+
+@app.route("/batch/<batch_id>/photo/<filename>/assign", methods=["POST"])
+def assign_photo(batch_id, filename):
+    batch = state.get_batch(batch_id)
+    if not batch:
+        return "Batch nicht gefunden", 404
+    photo = batch["photos"].get(filename)
+    if not photo or photo["status"] != "pending":
+        return redirect(url_for("batch_detail", batch_id=batch_id))
+
+    task_id = request.form.get("task_id", "").strip()
+    if not task_id:
+        return redirect(url_for("batch_detail", batch_id=batch_id))
+
+    task = clickup_ops.get_task_details(task_id)
+
+    clickup_ops.upload_attachment(task_id, photo["path"])
+
+    rotex_nummer = batch.get("rotex_nummer")
+    if rotex_nummer and not clickup_ops.get_rotex_nummer(task):
+        clickup_ops.set_custom_field(task_id, clickup_ops.FIELD_ID_ROTEX_NUMMER, rotex_nummer)
+
+    clickup_ops.set_task_status(task_id, CFG["clickup_status_done"])
+
+    sharepoint_folder, sharepoint_error = clickup_ops.resolve_sharepoint_folder(task)
+    if sharepoint_folder:
+        try:
+            clickup_ops._copy_to_onedrive(photo["path"], sharepoint_folder)
+        except Exception as exc:
+            print(f"[WARN] SharePoint-Kopie fehlgeschlagen fuer {batch_id}/{filename}: {exc}")
+    else:
+        print(f"[WARN] Nicht nach SharePoint kopiert - {sharepoint_error}")
+
+    email = clickup_ops.get_email(task)
+    if email:
+        try:
+            mail_send.send_sample_notification(
+                email,
+                mail_send.default_subject(task["name"]),
+                mail_send.default_body(task["name"]),
+                photo["path"],
+            )
+        except Exception as exc:
+            print(f"[WARN] Kunden-Mail fehlgeschlagen fuer {batch_id}/{filename}: {exc}")
+
+    state.resolve_photo(batch_id, filename, "assigned",
+                         assigned_task_id=task_id, assigned_task_name=task["name"])
+    return redirect(url_for("batch_detail", batch_id=batch_id))
+
+
+@app.route("/batch/<batch_id>/photo/<filename>/ignore", methods=["POST"])
+def ignore_photo(batch_id, filename):
+    state.resolve_photo(batch_id, filename, "ignored")
+    return redirect(url_for("batch_detail", batch_id=batch_id))
+
+
+if __name__ == "__main__":
+    # WICHTIG: bewusst Flasks eigener Server, NICHT gunicorn (siehe
+    # freisteller/app.py fuer die ausfuehrliche Begruendung - gunicorns
+    # fork() verursachte OneDrive-Deadlocks).
+    app.run(host="127.0.0.1", port=5153, debug=False)
