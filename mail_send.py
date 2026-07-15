@@ -23,29 +23,33 @@ def _load_config():
         return json.load(f)
 
 
-def send_sample_notification(to_address, subject, body_text, attachment_path):
-    """Sendet eine E-Mail mit dem Musterfoto als Anhang. Wirft eine Exception
-    bei einem Fehler - der Aufrufer (Review-UI) faengt das ab und zeigt eine
-    Warnung, statt den ganzen Zuordnungs-Schritt scheitern zu lassen."""
+def send_sample_notification(to_address, subject, body_text, attachment_paths):
+    """Sendet EINE E-Mail mit allen Musterfotos eines Batches als Anhaenge
+    (nicht eine Mail pro Foto - ein Batch aus mehreren Fotos derselben Rotex-
+    Nummer gehoert zum selben Task/derselben Bestellung). Wirft eine
+    Exception bei einem Fehler - der Aufrufer (Review-UI) faengt das ab und
+    zeigt eine Warnung, statt den ganzen Zuordnungs-Schritt scheitern zu
+    lassen."""
     cfg = _load_config()
     token = graph_auth.get_access_token()
     sender = cfg["sender_from_address"]
 
-    with open(attachment_path, "rb") as f:
-        attachment_b64 = base64.b64encode(f.read()).decode("ascii")
+    attachments = []
+    for path in attachment_paths:
+        with open(path, "rb") as f:
+            attachment_b64 = base64.b64encode(f.read()).decode("ascii")
+        attachments.append({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": os.path.basename(path),
+            "contentBytes": attachment_b64,
+        })
 
     payload = {
         "message": {
             "subject": subject,
             "body": {"contentType": "Text", "content": body_text},
             "toRecipients": [{"emailAddress": {"address": to_address}}],
-            "attachments": [
-                {
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": os.path.basename(attachment_path),
-                    "contentBytes": attachment_b64,
-                }
-            ],
+            "attachments": attachments,
         },
         "saveToSentItems": "true",
     }

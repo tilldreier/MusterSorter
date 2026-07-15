@@ -11,11 +11,13 @@ Ablauf:
    (zuerst exakte Rotex-Nummer, sonst KI-Bildvergleich) - zeigt das Foto
    ueberhaupt keinen Musterstrumpf (z.B. Versand-Screenshot), wird es
    automatisch ignoriert statt der Person vorgelegt.
-3. Pro Foto: per Klick auf eine der Task-Kacheln (mit Referenzbild) den
+3. Pro BATCH (= eine Mail, alle Fotos darin gehoeren zur selben Rotex-Nummer/
+   Bestellung): per Klick auf eine der Task-Kacheln (mit Referenzbild) den
    richtigen Task auswaehlen (Vorschlag ist vorausgewaehlt) und bestaetigen,
-   oder das Foto manuell ignorieren. Bei Bestaetigung: Anhang hochladen,
-   Rotex-Nummer-Feld setzen, Status auf "Muster Erhalten", Kopie nach
-   SharePoint, Kunden-Mail versenden.
+   oder alle Fotos des Batches manuell ignorieren. Bei Bestaetigung werden
+   ALLE Fotos des Batches auf einmal verarbeitet: Anhaenge hochladen,
+   Rotex-Nummer-Feld setzen, Status auf "Muster Erhalten", Kopien nach
+   SharePoint, EINE Kunden-Mail mit allen Fotos versenden.
 """
 
 import hmac
@@ -125,11 +127,11 @@ BATCH_TEMPLATE = """
 <html><head><title>Batch {{ batch_id }}</title>
 <style>
   body { font-family: -apple-system, sans-serif; max-width: 1100px; margin: 2em auto; padding: 0 1em; }
-  .photo { border: 2px solid #ddd; border-radius: 8px; padding: 1em; margin-bottom: 2em; }
-  .photo > img { max-width: 320px; max-height: 320px; object-fit: contain; float: left; margin-right: 1.5em; }
-  .suggestion { background: #eaf7ff; border-radius: 6px; padding: 0.6em 1em; margin-bottom: 0.8em; }
+  .gallery { display: flex; gap: 1em; margin-bottom: 1em; flex-wrap: wrap; }
+  .gallery img { max-width: 220px; max-height: 220px; object-fit: contain; border: 1px solid #ddd;
+    border-radius: 6px; }
+  .suggestion { background: #eaf7ff; border-radius: 6px; padding: 0.6em 1em; margin-bottom: 1em; }
   .suggestion.none { background: #fff3e0; }
-  .clear { clear: both; }
   .task-grid { display: flex; flex-wrap: wrap; gap: 0.8em; margin: 1em 0; }
   .task-card { border: 3px solid #ddd; border-radius: 8px; padding: 0.5em; width: 140px;
     text-align: center; cursor: pointer; }
@@ -145,44 +147,45 @@ BATCH_TEMPLATE = """
 <body>
 <p><a href="{{ url_for('index') }}">&larr; zurueck</a></p>
 <h1>{{ batch.subject }}</h1>
-<p class="meta">{{ batch.received }} - Rotex-Nr.: {{ batch.rotex_nummer or "unbekannt" }}</p>
+<p class="meta">{{ batch.received }} - Rotex-Nr.: {{ batch.rotex_nummer or "unbekannt" }} -
+  {{ pending_photos|length }} Foto(s), gehoeren alle zur selben Bestellung</p>
 
-{% for filename, photo in pending_photos %}
-  <div class="photo">
+<div class="gallery">
+  {% for filename, photo in pending_photos %}
     <img src="{{ url_for('photo_image', batch_id=batch_id, filename=filename) }}">
-    {% if photo.suggestion and photo.suggestion.task_id %}
-      <div class="suggestion">
-        <strong>Vorschlag:</strong> {{ photo.suggestion.task_name }}
-        ({{ photo.suggestion.source }}, Confidence: {{ photo.suggestion.confidence }})<br>
-        <small>{{ photo.suggestion.reasoning }}</small>
-      </div>
-    {% elif photo.suggestion %}
-      <div class="suggestion none">
-        <strong>Kein automatischer Treffer.</strong>
-        <small>{{ photo.suggestion.reasoning }}</small>
-      </div>
-    {% endif %}
-    <div class="clear"></div>
+  {% endfor %}
+</div>
 
-    <form method="post" action="{{ url_for('assign_photo', batch_id=batch_id, filename=filename) }}">
-      <div class="task-grid">
-        {% for t in candidate_tasks %}
-          <label class="task-card">
-            <input type="radio" name="task_id" value="{{ t.id }}"
-                   {% if photo.suggestion and photo.suggestion.task_id == t.id %}checked{% endif %}>
-            <img src="{{ t.thumb }}">
-            <div class="name">{{ t.name }}</div>
-          </label>
-        {% endfor %}
-      </div>
-      <div class="actions">
-        <button type="submit">Bestaetigen &amp; einsortieren</button>
-        <button type="submit" formaction="{{ url_for('ignore_photo', batch_id=batch_id, filename=filename) }}"
-                formnovalidate class="ignore">Muster ignorieren</button>
-      </div>
-    </form>
+{% if suggestion and suggestion.task_id %}
+  <div class="suggestion">
+    <strong>Vorschlag:</strong> {{ suggestion.task_name }}
+    ({{ suggestion.source }}, Confidence: {{ suggestion.confidence }})<br>
+    <small>{{ suggestion.reasoning }}</small>
   </div>
-{% endfor %}
+{% elif suggestion %}
+  <div class="suggestion none">
+    <strong>Kein automatischer Treffer.</strong>
+    <small>{{ suggestion.reasoning }}</small>
+  </div>
+{% endif %}
+
+<form method="post" action="{{ url_for('assign_batch_photos', batch_id=batch_id) }}">
+  <div class="task-grid">
+    {% for t in candidate_tasks %}
+      <label class="task-card">
+        <input type="radio" name="task_id" value="{{ t.id }}"
+               {% if suggestion and suggestion.task_id == t.id %}checked{% endif %}>
+        <img src="{{ t.thumb }}">
+        <div class="name">{{ t.name }}</div>
+      </label>
+    {% endfor %}
+  </div>
+  <div class="actions">
+    <button type="submit">Alle Fotos bestaetigen &amp; einsortieren</button>
+    <button type="submit" formaction="{{ url_for('ignore_batch_photos', batch_id=batch_id) }}"
+            formnovalidate class="ignore">Alle Fotos ignorieren</button>
+  </div>
+</form>
 </body></html>
 """
 
@@ -236,6 +239,16 @@ def internal_fetch():
     return jsonify({"ok": True, "status": "started"})
 
 
+def _batch_suggestion(batch):
+    """Alle Fotos eines Batches gehoeren zur selben Bestellung/demselben Task
+    (gleiche Rotex-Nummer) - deshalb genuegt EIN repraesentativer Vorschlag
+    fuer den ganzen Batch statt einem pro Foto."""
+    for _, photo in _pending_photos(batch):
+        if photo.get("suggestion"):
+            return photo["suggestion"]
+    return None
+
+
 @app.route("/batch/<batch_id>")
 def batch_detail(batch_id):
     batch = state.get_batch(batch_id)
@@ -251,6 +264,7 @@ def batch_detail(batch_id):
         batch_id=batch_id,
         batch=batch,
         pending_photos=_pending_photos(batch),
+        suggestion=_batch_suggestion(batch),
         candidate_tasks=candidate_tasks,
     )
 
@@ -266,22 +280,32 @@ def photo_image(batch_id, filename):
     return send_file(photo["path"])
 
 
-@app.route("/batch/<batch_id>/photo/<filename>/assign", methods=["POST"])
-def assign_photo(batch_id, filename):
+@app.route("/batch/<batch_id>/assign", methods=["POST"])
+def assign_batch_photos(batch_id):
+    """Ordnet ALLE noch offenen Fotos des Batches auf einmal demselben Task
+    zu - ein Batch (eine Mail) enthaelt immer nur Fotos derselben Rotex-
+    Nummer/Bestellung, es gibt also nie unterschiedliche Ziel-Tasks
+    innerhalb eines Batches. Das vermeidet auch das Problem, dass der Task
+    nach der ersten Zuordnung aus der Kandidatenliste verschwindet (weil
+    sich sein ClickUp-Status aendert) - alle Fotos werden VOR der
+    Statusaenderung verarbeitet."""
     batch = state.get_batch(batch_id)
     if not batch:
         return "Batch nicht gefunden", 404
-    photo = batch["photos"].get(filename)
-    if not photo or photo["status"] != "pending":
-        return redirect(url_for("batch_detail", batch_id=batch_id))
 
     task_id = request.form.get("task_id", "").strip()
     if not task_id:
         return redirect(url_for("batch_detail", batch_id=batch_id))
 
+    pending = _pending_photos(batch)
+    if not pending:
+        return redirect(url_for("batch_detail", batch_id=batch_id))
+
     task = clickup_ops.get_task_details(task_id)
 
-    clickup_ops.upload_attachment(task_id, photo["path"])
+    photo_paths = [photo["path"] for _, photo in pending]
+    for path in photo_paths:
+        clickup_ops.upload_attachment(task_id, path)
 
     rotex_nummer = batch.get("rotex_nummer")
     if rotex_nummer and not clickup_ops.get_rotex_nummer(task):
@@ -291,10 +315,11 @@ def assign_photo(batch_id, filename):
 
     sharepoint_folder, sharepoint_error = clickup_ops.resolve_sharepoint_folder(task)
     if sharepoint_folder:
-        try:
-            clickup_ops._copy_to_onedrive(photo["path"], sharepoint_folder)
-        except Exception as exc:
-            print(f"[WARN] SharePoint-Kopie fehlgeschlagen fuer {batch_id}/{filename}: {exc}")
+        for path in photo_paths:
+            try:
+                clickup_ops._copy_to_onedrive(path, sharepoint_folder)
+            except Exception as exc:
+                print(f"[WARN] SharePoint-Kopie fehlgeschlagen fuer {batch_id}/{path}: {exc}")
     else:
         print(f"[WARN] Nicht nach SharePoint kopiert - {sharepoint_error}")
 
@@ -305,19 +330,24 @@ def assign_photo(batch_id, filename):
                 email,
                 mail_send.default_subject(task["name"]),
                 mail_send.default_body(task["name"]),
-                photo["path"],
+                photo_paths,
             )
         except Exception as exc:
-            print(f"[WARN] Kunden-Mail fehlgeschlagen fuer {batch_id}/{filename}: {exc}")
+            print(f"[WARN] Kunden-Mail fehlgeschlagen fuer {batch_id}: {exc}")
 
-    state.resolve_photo(batch_id, filename, "assigned",
-                         assigned_task_id=task_id, assigned_task_name=task["name"])
+    for filename, _ in pending:
+        state.resolve_photo(batch_id, filename, "assigned",
+                             assigned_task_id=task_id, assigned_task_name=task["name"])
     return redirect(url_for("batch_detail", batch_id=batch_id))
 
 
-@app.route("/batch/<batch_id>/photo/<filename>/ignore", methods=["POST"])
-def ignore_photo(batch_id, filename):
-    state.resolve_photo(batch_id, filename, "ignored")
+@app.route("/batch/<batch_id>/ignore", methods=["POST"])
+def ignore_batch_photos(batch_id):
+    batch = state.get_batch(batch_id)
+    if not batch:
+        return "Batch nicht gefunden", 404
+    for filename, _ in _pending_photos(batch):
+        state.resolve_photo(batch_id, filename, "ignored")
     return redirect(url_for("batch_detail", batch_id=batch_id))
 
 
