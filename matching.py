@@ -11,6 +11,7 @@ Zuordnung wird erst durch eine manuelle Bestaetigung wirksam.
 import base64
 import json
 import os
+import re
 
 import requests
 from anthropic import Anthropic
@@ -62,6 +63,19 @@ def _download_image_b64(url):
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     return base64.standard_b64encode(resp.content).decode("ascii")
+
+
+def _strip_markdown_fence(text):
+    """Claude umschliesst die angeforderte JSON-Antwort manchmal mit
+    Markdown-Codebloecken (```json ... ```), obwohl der Prompt reines JSON
+    verlangt - ohne dieses Entfernen schlaegt json.loads() fehl und ein
+    tatsaechlich gefundener Treffer wird faelschlich als "nicht lesbar"
+    verworfen."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[a-zA-Z]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```$", "", stripped)
+    return stripped.strip()
 
 
 def match_by_vision(photo_path, candidates, api_key):
@@ -124,9 +138,10 @@ def match_by_vision(photo_path, candidates, api_key):
         messages=[{"role": "user", "content": content}],
     )
     raw_text = "".join(block.text for block in response.content if block.type == "text")
+    json_text = _strip_markdown_fence(raw_text)
 
     try:
-        result = json.loads(raw_text)
+        result = json.loads(json_text)
     except json.JSONDecodeError:
         return None, None, f"Antwort nicht als JSON lesbar: {raw_text[:200]}"
 
