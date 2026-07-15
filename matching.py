@@ -96,21 +96,31 @@ def _strip_markdown_fence(text):
     return stripped.strip()
 
 
-def match_by_vision(photo_path, candidates, api_key):
-    """Fragt Claude Vision, welcher Kandidat am ehesten zum Musterfoto passt.
-    Gibt (task_or_None, confidence, reasoning) zurueck."""
-    candidates_with_refs = []
+def enrich_with_thumbnails(candidates):
+    """Laedt zu jedem Kandidaten-Task das Referenz-Vorschaubild nach (der
+    Listen-Endpunkt liefert - wie schon in clickup_watcher.py dokumentiert -
+    keine "attachments" mit). Gibt eine Liste von (task, thumbnail_url)
+    zurueck, nur fuer Tasks mit vorhandenem Bild. Wird sowohl fuer den
+    KI-Bildvergleich als auch fuer die anklickbare Task-Auswahl in der
+    Review-UI verwendet."""
+    result = []
     for task in candidates:
-        # Der Listen-Endpunkt (get_tasks_by_status) liefert "attachments"
-        # NICHT mit (wie schon in clickup_watcher.py dokumentiert) - dafuer
-        # hier pro Kandidat den Einzel-Task nachladen.
         task_details = clickup_ops.get_task_details(task["id"])
         ref_url = _reference_thumbnail_url(task_details)
         if ref_url:
-            candidates_with_refs.append((task, ref_url))
+            result.append((task, ref_url))
+    return result
+
+
+def match_by_vision(photo_path, candidates, api_key):
+    """Fragt Claude Vision, welcher Kandidat am ehesten zum Musterfoto passt,
+    UND ob das Foto ueberhaupt einen Musterstrumpf zeigt (manche Anhaenge
+    sind z.B. Versand-Screenshots statt Fotos - siehe is_sock_photo).
+    Gibt (task_or_None, confidence, reasoning, is_sock_photo) zurueck."""
+    candidates_with_refs = enrich_with_thumbnails(candidates)
 
     if not candidates_with_refs:
-        return None, None, "Keine Kandidaten mit Referenzbild vorhanden."
+        return None, None, "Keine Kandidaten mit Referenzbild vorhanden.", True
 
     with open(photo_path, "rb") as f:
         photo_b64 = _prepare_image_b64(f.read())
@@ -119,14 +129,18 @@ def match_by_vision(photo_path, candidates, api_key):
         {
             "type": "text",
             "text": (
-                "Das erste Bild ist ein Foto eines physischen Musterstrumpfs. "
-                "Danach folgen durchnummerierte Referenzbilder (Design-Sheets) "
-                "bereits bekannter Strumpf-Designs. Finde heraus, ob eines der "
-                "Referenzbilder DASSELBE Design zeigt (Logo, Text, Farben, "
-                "Muster) wie das Foto - nicht nur eine aehnliche Grundfarbe. "
+                "Das erste Bild soll ein Foto eines physischen Musterstrumpfs "
+                "sein - manchmal ist es aber stattdessen z.B. ein Screenshot "
+                "von Versanddaten, eine Rechnung o.ae. Pruefe zuerst, ob das "
+                "erste Bild ueberhaupt einen Strumpf zeigt (is_sock_photo). "
+                "Falls ja: Danach folgen durchnummerierte Referenzbilder "
+                "(Design-Sheets) bereits bekannter Strumpf-Designs. Finde "
+                "heraus, ob eines der Referenzbilder DASSELBE Design zeigt "
+                "(Logo, Text, Farben, Muster) wie das Foto - nicht nur eine "
+                "aehnliche Grundfarbe. "
                 "Antworte NUR mit JSON: "
-                '{"best_match": <Nummer oder null>, "confidence": "high"|"medium"|"low", '
-                '"reasoning": "<kurze Begruendung>"}'
+                '{"is_sock_photo": true|false, "best_match": <Nummer oder null>, '
+                '"confidence": "high"|"medium"|"low", "reasoning": "<kurze Begruendung>"}'
             ),
         },
         {
@@ -161,16 +175,17 @@ def match_by_vision(photo_path, candidates, api_key):
     try:
         result = json.loads(json_text)
     except json.JSONDecodeError:
-        return None, None, f"Antwort nicht als JSON lesbar: {raw_text[:200]}"
+        return None, None, f"Antwort nicht als JSON lesbar: {raw_text[:200]}", True
 
+    is_sock_photo = result.get("is_sock_photo", True)
     best_match = result.get("best_match")
     confidence = result.get("confidence")
     reasoning = result.get("reasoning", "")
-    if not best_match or not (1 <= best_match <= len(candidates_with_refs)):
-        return None, confidence, reasoning
+    if not is_sock_photo or not best_match or not (1 <= best_match <= len(candidates_with_refs)):
+        return None, confidence, reasoning, is_sock_photo
 
     matched_task = candidates_with_refs[best_match - 1][0]
-    return matched_task, confidence, reasoning
+    return matched_task, confidence, reasoning, is_sock_photo
 
 
 def suggest_match(photo_path, rotex_nummer, api_key):
@@ -188,9 +203,10 @@ def suggest_match(photo_path, rotex_nummer, api_key):
             "source": "rotex_nummer",
             "confidence": "high",
             "reasoning": f"Rotex-Nummer {rotex_nummer} exakt im Task-Feld gefunden.",
+            "is_sock_photo": True,
         }
 
-    vision_match, confidence, reasoning = match_by_vision(photo_path, candidates, api_key)
+    vision_match, confidence, reasoning, is_sock_photo = match_by_vision(photo_path, candidates, api_key)
     if vision_match:
         return {
             "task_id": vision_match["id"],
@@ -198,10 +214,12 @@ def suggest_match(photo_path, rotex_nummer, api_key):
             "source": "vision",
             "confidence": confidence,
             "reasoning": reasoning,
+            "is_sock_photo": is_sock_photo,
         }
     return {
         "task_id": None,
         "task_name": None,
+        "is_sock_photo": is_sock_photo,
         "source": "vision",
         "confidence": confidence,
         "reasoning": reasoning or "Kein passendes Referenzbild gefunden.",

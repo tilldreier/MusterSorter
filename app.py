@@ -8,11 +8,14 @@ Ablauf:
 1. "Neue Mails abrufen" holt neue Mustermails von maskova@rotexponozky.cz
    aus sales@dirtysox.ch und laedt die JPG-Anhaenge herunter.
 2. Fuer jedes neue Foto wird automatisch ein Matching-Vorschlag berechnet
-   (zuerst exakte Rotex-Nummer, sonst KI-Bildvergleich).
-3. Pro Foto: Vorschlag pruefen/aendern (durchsuchbare Liste aller "Muster
-   Bestellt"-Tasks als Fallback) und bestaetigen, oder das Foto ignorieren.
-   Bei Bestaetigung: Anhang hochladen, Rotex-Nummer-Feld setzen, Status auf
-   "Muster Erhalten", Kopie nach SharePoint, Kunden-Mail versenden.
+   (zuerst exakte Rotex-Nummer, sonst KI-Bildvergleich) - zeigt das Foto
+   ueberhaupt keinen Musterstrumpf (z.B. Versand-Screenshot), wird es
+   automatisch ignoriert statt der Person vorgelegt.
+3. Pro Foto: per Klick auf eine der Task-Kacheln (mit Referenzbild) den
+   richtigen Task auswaehlen (Vorschlag ist vorausgewaehlt) und bestaetigen,
+   oder das Foto manuell ignorieren. Bei Bestaetigung: Anhang hochladen,
+   Rotex-Nummer-Feld setzen, Status auf "Muster Erhalten", Kopie nach
+   SharePoint, Kunden-Mail versenden.
 """
 
 import hmac
@@ -62,8 +65,17 @@ def _generate_suggestions():
             except Exception as exc:
                 print(f"[WARN] Matching fehlgeschlagen fuer {batch_id}/{filename}: {exc}")
                 suggestion = None
-            if suggestion:
-                state.set_photo_suggestion(batch_id, filename, suggestion)
+            if not suggestion:
+                continue
+            if suggestion.get("is_sock_photo") is False:
+                # Kein Muster-Foto (z.B. Versand-Screenshot/Rechnung als
+                # Anhang) - automatisch ignorieren statt der Person einen
+                # sinnlosen Zuordnungs-Schritt vorzulegen.
+                state.resolve_photo(batch_id, filename, "ignored")
+                print(f"[INFO] {batch_id}/{filename} automatisch ignoriert "
+                      f"(kein Musterfoto erkannt): {suggestion.get('reasoning')}")
+                continue
+            state.set_photo_suggestion(batch_id, filename, suggestion)
 
 
 def _run_fetch_in_background():
@@ -112,16 +124,22 @@ BATCH_TEMPLATE = """
 <!doctype html>
 <html><head><title>Batch {{ batch_id }}</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 1000px; margin: 2em auto; padding: 0 1em; }
-  .photo { border: 2px solid #ddd; border-radius: 8px; padding: 1em; margin-bottom: 1em; }
-  .photo img { max-width: 320px; max-height: 320px; object-fit: contain; float: left; margin-right: 1.5em; }
+  body { font-family: -apple-system, sans-serif; max-width: 1100px; margin: 2em auto; padding: 0 1em; }
+  .photo { border: 2px solid #ddd; border-radius: 8px; padding: 1em; margin-bottom: 2em; }
+  .photo > img { max-width: 320px; max-height: 320px; object-fit: contain; float: left; margin-right: 1.5em; }
   .suggestion { background: #eaf7ff; border-radius: 6px; padding: 0.6em 1em; margin-bottom: 0.8em; }
   .suggestion.none { background: #fff3e0; }
-  input[list] { padding: 0.4em; min-width: 260px; }
-  .actions { margin-top: 0.8em; }
-  .actions button { margin-right: 0.6em; }
-  button.ignore { background: #999; }
   .clear { clear: both; }
+  .task-grid { display: flex; flex-wrap: wrap; gap: 0.8em; margin: 1em 0; }
+  .task-card { border: 3px solid #ddd; border-radius: 8px; padding: 0.5em; width: 140px;
+    text-align: center; cursor: pointer; }
+  .task-card img { width: 100%; height: 100px; object-fit: contain; }
+  .task-card input { display: none; }
+  .task-card:has(input:checked) { border-color: #00a0e3; background: #eaf7ff; }
+  .task-card .name { font-size: 0.85em; margin-top: 0.3em; }
+  .actions button { margin-right: 0.6em; padding: 0.6em 1.2em; border: none; border-radius: 6px;
+    background: #00a0e3; color: white; cursor: pointer; font-size: 1em; }
+  .actions button.ignore { background: #999; }
 </style>
 </head>
 <body>
@@ -144,23 +162,25 @@ BATCH_TEMPLATE = """
         <small>{{ photo.suggestion.reasoning }}</small>
       </div>
     {% endif %}
+    <div class="clear"></div>
+
     <form method="post" action="{{ url_for('assign_photo', batch_id=batch_id, filename=filename) }}">
-      Task waehlen:
-      <input name="task_id" list="tasks_{{ filename }}"
-             value="{{ photo.suggestion.task_id if photo.suggestion else '' }}"
-             placeholder="Task-ID oder aus Liste waehlen">
-      <datalist id="tasks_{{ filename }}">
+      <div class="task-grid">
         {% for t in candidate_tasks %}
-          <option value="{{ t.id }}">{{ t.name }}</option>
+          <label class="task-card">
+            <input type="radio" name="task_id" value="{{ t.id }}"
+                   {% if photo.suggestion and photo.suggestion.task_id == t.id %}checked{% endif %}>
+            <img src="{{ t.thumb }}">
+            <div class="name">{{ t.name }}</div>
+          </label>
         {% endfor %}
-      </datalist>
+      </div>
       <div class="actions">
         <button type="submit">Bestaetigen &amp; einsortieren</button>
         <button type="submit" formaction="{{ url_for('ignore_photo', batch_id=batch_id, filename=filename) }}"
-                class="ignore">Muster ignorieren</button>
+                formnovalidate class="ignore">Muster ignorieren</button>
       </div>
     </form>
-    <div class="clear"></div>
   </div>
 {% endfor %}
 </body></html>
@@ -221,7 +241,11 @@ def batch_detail(batch_id):
     batch = state.get_batch(batch_id)
     if not batch:
         return "Batch nicht gefunden", 404
-    candidate_tasks = matching.get_candidates()
+    candidates_with_thumbs = matching.enrich_with_thumbnails(matching.get_candidates())
+    candidate_tasks = [
+        {"id": task["id"], "name": task["name"], "thumb": thumb_url}
+        for task, thumb_url in candidates_with_thumbs
+    ]
     return render_template_string(
         BATCH_TEMPLATE,
         batch_id=batch_id,
