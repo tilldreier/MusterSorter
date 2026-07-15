@@ -9,12 +9,14 @@ Der Vorschlag ist IMMER nur eine Vorauswahl fuer die Review-UI - die
 Zuordnung wird erst durch eine manuelle Bestaetigung wirksam.
 """
 import base64
+import io
 import json
 import os
 import re
 
 import requests
 from anthropic import Anthropic
+from PIL import Image
 
 import clickup_ops
 
@@ -59,10 +61,26 @@ def _reference_thumbnail_url(task):
     return best
 
 
+MAX_IMAGE_DIMENSION = 1568  # von Anthropic empfohlenes Maximum, spart auch Tokens/Kosten
+
+
+def _prepare_image_b64(raw_bytes):
+    """Verkleinert/komprimiert ein Bild auf JPEG, bevor es an die Anthropic-
+    API geschickt wird - Kamerafotos (z.B. von einem iPhone) sind oft
+    8-15 MB gross und ueberschreiten Claudes 10-MB-Limit pro Bild, was sonst
+    mit einem 400 "image exceeds 10 MB maximum" abbricht."""
+    with Image.open(io.BytesIO(raw_bytes)) as im:
+        im = im.convert("RGB")
+        im.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=85)
+        return base64.standard_b64encode(buf.getvalue()).decode("ascii")
+
+
 def _download_image_b64(url):
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
-    return base64.standard_b64encode(resp.content).decode("ascii")
+    return _prepare_image_b64(resp.content)
 
 
 def _strip_markdown_fence(text):
@@ -95,7 +113,7 @@ def match_by_vision(photo_path, candidates, api_key):
         return None, None, "Keine Kandidaten mit Referenzbild vorhanden."
 
     with open(photo_path, "rb") as f:
-        photo_b64 = base64.standard_b64encode(f.read()).decode("ascii")
+        photo_b64 = _prepare_image_b64(f.read())
 
     content = [
         {
@@ -126,7 +144,7 @@ def match_by_vision(photo_path, candidates, api_key):
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": "image/png",
+                "media_type": "image/jpeg",
                 "data": _download_image_b64(ref_url),
             },
         })
