@@ -69,7 +69,11 @@ def match_by_vision(photo_path, candidates, api_key):
     Gibt (task_or_None, confidence, reasoning) zurueck."""
     candidates_with_refs = []
     for task in candidates:
-        ref_url = _reference_thumbnail_url(task)
+        # Der Listen-Endpunkt (get_tasks_by_status) liefert "attachments"
+        # NICHT mit (wie schon in clickup_watcher.py dokumentiert) - dafuer
+        # hier pro Kandidat den Einzel-Task nachladen.
+        task_details = clickup_ops.get_task_details(task["id"])
+        ref_url = _reference_thumbnail_url(task_details)
         if ref_url:
             candidates_with_refs.append((task, ref_url))
 
