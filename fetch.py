@@ -11,6 +11,7 @@ import base64
 import json
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -19,6 +20,13 @@ import state
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg"}
+
+# Ohne Datumsgrenze liefert Graph (mangels $orderby, das sich mit diesem
+# $filter nicht kombinieren laesst) die AELTESTEN Treffer zuerst - bei einem
+# seit Jahren aktiven Absender waeren das Mails von 2021. Deshalb nur Mails
+# der letzten N Tage abfragen, das reicht fuer den laufenden Betrieb bei
+# weitem (die Mailbox wird alle paar Minuten gepollt).
+LOOKBACK_DAYS = 45
 
 # Erkennt die Rotex-Losnummer im Betreff, z.B. "DIRTY 793 FAIRTRAIL" oder
 # "dirty 795" -> "793"/"795". Nimmt die erste 2-4-stellige Zahl nach "dirty"
@@ -48,9 +56,13 @@ def graph_get(token, url, params=None, extra_headers=None):
 
 
 def fetch_candidate_messages(token, mailbox, sender_filter):
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     url = f"{GRAPH_BASE}/users/{mailbox}/messages"
     params = {
-        "$filter": f"from/emailAddress/address eq '{sender_filter}' and hasAttachments eq true",
+        "$filter": (
+            f"from/emailAddress/address eq '{sender_filter}' and hasAttachments eq true"
+            f" and receivedDateTime ge {cutoff}"
+        ),
         "$top": "50",
         "$select": "id,subject,receivedDateTime,from,hasAttachments",
     }
