@@ -6,6 +6,7 @@ Codebasis-Familie, gleicher Workspace).
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -34,6 +35,28 @@ HEADERS = {
 }
 
 
+_RETRY_DELAYS = [1, 2, 4, 8]
+
+
+def _with_retry(func):
+    """Wiederholt func() bei subprocess.CalledProcessError mit steigender
+    Wartezeit - beobachtet, dass /bin/cp gegen einen frisch angelegten/
+    gerade erst synchronisierten OneDrive-Ordner vereinzelt beim ERSTEN
+    Versuch mit exit code 1 scheitert (z.B. weil OneDrive den Ordner/die
+    Metadaten in dem Moment noch aktualisiert), ein Wiederholungsversuch
+    kurz danach aber zuverlaessig klappt (siehe freisteller/fs_ops.py fuer
+    das gleiche, dort bereits geloeste Muster)."""
+    last_exc = None
+    for attempt, delay in enumerate([0] + _RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            return func()
+        except subprocess.CalledProcessError as exc:
+            last_exc = exc
+    raise last_exc
+
+
 def _copy_to_onedrive(src, dest_dir):
     """Kopiert src nach dest_dir per frisch gespawntem /bin/cp statt Pythons
     shutil.copy2() - Pythons eigene os/shutil-Syscalls scheitern reproduzierbar
@@ -41,7 +64,7 @@ def _copy_to_onedrive(src, dest_dir):
     wenn sie innerhalb eines langlaufenden Prozesses aufgerufen werden (siehe
     freisteller-/clickup-photoshop-Projekt fuer die ausfuehrliche Herleitung)."""
     dest_path = os.path.join(dest_dir, os.path.basename(src))
-    subprocess.run(["/bin/cp", src, dest_path], check=True, capture_output=True)
+    _with_retry(lambda: subprocess.run(["/bin/cp", src, dest_path], check=True, capture_output=True))
 
 
 def get_tasks_by_status(status_name):
