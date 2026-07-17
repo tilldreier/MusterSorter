@@ -10,9 +10,11 @@ _lock = threading.Lock()
 
 def _load():
     if not os.path.exists(STATE_PATH):
-        return {"processed_message_ids": [], "batches": {}}
+        return {"processed_message_ids": [], "batches": {}, "consumed_tokens": []}
     with open(STATE_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    data.setdefault("consumed_tokens", [])
+    return data
 
 
 def _save(data):
@@ -87,4 +89,17 @@ def set_photo_suggestion(batch_id, filename, suggestion):
         if not photo:
             return
         photo["suggestion"] = suggestion
+        _save(data)
+
+
+def is_token_consumed(jti):
+    with _lock:
+        return jti in _load()["consumed_tokens"]
+
+
+def mark_token_consumed(jti):
+    with _lock:
+        data = _load()
+        if jti not in data["consumed_tokens"]:
+            data["consumed_tokens"].append(jti)
         _save(data)

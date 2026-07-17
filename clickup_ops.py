@@ -3,6 +3,7 @@ ClickUp-Hilfsfunktionen fuer den Muster Sorter - wiederverwendet dieselben,
 bereits bewaehrten Muster wie clickup-photoshop/clickup_watcher.py (gleiche
 Codebasis-Familie, gleicher Workspace).
 """
+import io
 import json
 import os
 import subprocess
@@ -27,6 +28,16 @@ FIELD_ID_ROTEX_NUMMER = _CFG["clickup_field_rotex_nummer"]
 FIELD_ID_SHAREPOINT = _CFG["clickup_field_sharepoint"]
 FIELD_ID_EMAIL = _CFG["clickup_field_email"]
 SHAREPOINT_LOCAL_BASE = _CFG["sharepoint_base"]
+
+# Optional (per-Groesse) Mengenfelder fuer die Muster-Freigabe - .get() statt
+# direkter Indizierung, damit ein config.json ohne diese Schluessel (z.B. vor
+# dem ersten Deploy dieser Funktion) nicht den kompletten App-Import zum
+# Absturz bringt.
+FIELD_ID_MENGE_TOTAL = _CFG.get("clickup_field_menge_total") or None
+FIELD_ID_MENGE_XS = _CFG.get("clickup_field_menge_xs") or None
+FIELD_ID_MENGE_S = _CFG.get("clickup_field_menge_s") or None
+FIELD_ID_MENGE_M = _CFG.get("clickup_field_menge_m") or None
+FIELD_ID_MENGE_L = _CFG.get("clickup_field_menge_l") or None
 
 CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
 HEADERS = {
@@ -104,6 +115,26 @@ def get_email(task):
     return _read_field_value(task, FIELD_ID_EMAIL) if FIELD_ID_EMAIL else None
 
 
+def get_menge_total(task):
+    return _read_field_value(task, FIELD_ID_MENGE_TOTAL) if FIELD_ID_MENGE_TOTAL else None
+
+
+def get_menge_xs(task):
+    return _read_field_value(task, FIELD_ID_MENGE_XS) if FIELD_ID_MENGE_XS else None
+
+
+def get_menge_s(task):
+    return _read_field_value(task, FIELD_ID_MENGE_S) if FIELD_ID_MENGE_S else None
+
+
+def get_menge_m(task):
+    return _read_field_value(task, FIELD_ID_MENGE_M) if FIELD_ID_MENGE_M else None
+
+
+def get_menge_l(task):
+    return _read_field_value(task, FIELD_ID_MENGE_L) if FIELD_ID_MENGE_L else None
+
+
 def resolve_sharepoint_folder(task):
     """Leitet aus dem Custom Field "SharePoint Projektordner" den lokalen Pfad
     im gemounteten OneDrive-Sync ab. Gibt den Pfad nur zurueck, wenn er lokal
@@ -126,14 +157,44 @@ def resolve_sharepoint_folder(task):
     return None, f"Ordner existiert lokal nicht (OneDrive-Sync?): {candidate}"
 
 
-def upload_attachment(task_id, file_path):
+def upload_attachment_bytes(task_id, file_bytes, filename, content_type=None):
+    """Wie upload_attachment(), nimmt aber Bytes statt eines lokalen Pfads -
+    fuer Dateien, die wir bereits im Speicher haben (z.B. von einer ClickUp-
+    Attachment-URL heruntergeladen), ohne Umweg ueber eine Temp-Datei."""
     url = f"{CLICKUP_API_BASE}/task/{task_id}/attachment"
-    with open(file_path, "rb") as f:
-        files = {"attachment": (Path(file_path).name, f)}
-        headers = {"Authorization": CLICKUP_API_TOKEN}
-        resp = requests.post(url, headers=headers, files=files)
+    file_obj = io.BytesIO(file_bytes)
+    files = {"attachment": (filename, file_obj, content_type) if content_type else (filename, file_obj)}
+    headers = {"Authorization": CLICKUP_API_TOKEN}
+    resp = requests.post(url, headers=headers, files=files)
     resp.raise_for_status()
     return resp.json()
+
+
+def upload_attachment(task_id, file_path):
+    with open(file_path, "rb") as f:
+        return upload_attachment_bytes(task_id, f.read(), Path(file_path).name)
+
+
+def delete_attachment(attachment_id):
+    """Loescht einen bestehenden Anhang - genutzt, um einen Entwurf beim
+    Freigeben unter neuem (mit APPROVED_ markiertem) Dateinamen neu
+    hochzuladen. Nicht Teil von ClickUps offiziell dokumentierter API-
+    Referenz - vor produktivem Einsatz gegen einen echten Test-Anhang
+    verifizieren."""
+    url = f"{CLICKUP_API_BASE}/attachment/{attachment_id}"
+    resp = requests.delete(url, headers=HEADERS)
+    if resp.status_code not in (200, 204):
+        print(f"  WARNUNG: Anhang {attachment_id} konnte nicht geloescht werden "
+              f"({resp.status_code}): {resp.text}")
+
+
+def post_comment(task_id, comment_text):
+    url = f"{CLICKUP_API_BASE}/task/{task_id}/comment"
+    payload = {"comment_text": comment_text, "notify_all": False}
+    resp = requests.post(url, headers=HEADERS, json=payload)
+    if resp.status_code not in (200, 201):
+        print(f"  WARNUNG: Kommentar konnte nicht gepostet werden "
+              f"({resp.status_code}): {resp.text}")
 
 
 def set_task_status(task_id, status_name):

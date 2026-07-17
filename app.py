@@ -29,11 +29,12 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 
 import clickup_ops
 import fetch
-import mail_send
 import matching
 import state
+from approval_routes import approval_bp
 
 app = Flask(__name__)
+app.register_blueprint(approval_bp)
 
 
 def _load_config():
@@ -323,17 +324,11 @@ def assign_batch_photos(batch_id):
     else:
         print(f"[WARN] Nicht nach SharePoint kopiert - {sharepoint_error}")
 
-    email = clickup_ops.get_email(task)
-    if email:
-        try:
-            mail_send.send_sample_notification(
-                email,
-                mail_send.default_subject(task["name"]),
-                mail_send.default_body(task["name"]),
-                photo_paths,
-            )
-        except Exception as exc:
-            print(f"[WARN] Kunden-Mail fehlgeschlagen fuer {batch_id}: {exc}")
+    # Die Kunden-Benachrichtigung wird NICHT mehr hier verschickt - sobald der
+    # Status oben auf CFG["clickup_status_done"] wechselt, feuert eine
+    # ClickUp-Automation einen Webhook, den Trigger.dev's
+    # "sample-approval-trigger"-Task empfaengt und der die Mail (inkl.
+    # Freigabe-/Mengen-Bestaetigungslink) verschickt - siehe approval_routes.py.
 
     for filename, _ in pending:
         state.resolve_photo(batch_id, filename, "assigned",

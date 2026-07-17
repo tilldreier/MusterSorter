@@ -16,5 +16,15 @@
   "anthropic_api_key": "",
   "sender_from_address": "custom@dirtysox.ch",
   "public_base_url": "https://muster.dirtysox.ch",
-  "internal_fetch_secret": ""
+  "internal_fetch_secret": "",
+  "clickup_field_menge_total": "",
+  "clickup_field_menge_xs": "",
+  "clickup_field_menge_s": "",
+  "clickup_field_menge_m": "",
+  "clickup_field_menge_l": "",
+  "clickup_status_draft_approved": "entwurf freigegeben",
+  "clickup_status_draft_rejected": "entwurf",
+  "clickup_status_sample_rejected": "Muster Abgelehnt",
+  "approval_link_secret": "",
+  "approval_link_ttl_days": 30
 }
