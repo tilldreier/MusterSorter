@@ -28,6 +28,15 @@ APPROVED_PREFIX = "APPROVED_"
 
 IMAGE_MIMETYPE_PREFIX = "image/"
 
+# Fuer die Muster-Bestaetigungsseite: es gibt keine Namenskonvention, die Musterfotos POSITIV
+# erkennt, aber Designsheets/Templates sind bereits zuverlaessig erkennbar - die auszuschliessen
+# (statt Musterfotos positiv zu matchen) verhindert, dass hochaufgeloeste Design-Dateien mit
+# angezeigt werden. Bewusst breiter als DESIGN_SHEET_PATTERN (das nur die eine kanonische .jpg
+# fuer die woechentliche Mail matcht) - muss auch die .png-Varianten (Vollaufloesung und "_small")
+# erfassen, die neben ihr auf dem Task liegen. Muss mit DESIGN_ARTIFACT_PATTERN in
+# sample-approval-trigger.ts (Repo A) uebereinstimmen.
+DESIGN_ARTIFACT_PATTERN = re.compile(r"designsheet|template", re.IGNORECASE)
+
 
 def _load_config():
     cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
@@ -257,7 +266,10 @@ def approve_sample(token):
 
     task_id = payload["taskId"]
     task = clickup_ops.get_task_details(task_id)
-    sample_photos = [a for a in task.get("attachments", []) if (a.get("mimetype") or "").startswith(IMAGE_MIMETYPE_PREFIX)]
+    sample_photos = [
+        a for a in task.get("attachments", [])
+        if (a.get("mimetype") or "").startswith(IMAGE_MIMETYPE_PREFIX) and not DESIGN_ARTIFACT_PATTERN.search(a.get("title", ""))
+    ]
 
     def _render_form(error=None, menge_xs=None, menge_s=None, menge_m=None, menge_l=None):
         return render_template_string(
