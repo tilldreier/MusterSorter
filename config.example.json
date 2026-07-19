@@ -25,6 +25,7 @@
   "clickup_status_draft_approved": "entwurf freigegeben",
   "clickup_status_draft_rejected": "entwurf",
   "clickup_status_sample_rejected": "Muster Abgelehnt",
+  "clickup_status_sample_approved": "Freigegeben für Bestellung",
   "approval_link_secret": "",
   "approval_link_ttl_days": 30
 }

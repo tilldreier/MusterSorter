@@ -323,6 +323,7 @@ def approve_sample(token):
             task_id,
             f"Menge vom Kunden bestätigt: XS={parsed['xs']}, S={parsed['s']}, M={parsed['m']}, L={parsed['l']}, Total={total}",
         )
+        clickup_ops.set_task_status(task_id, CFG["clickup_status_sample_approved"])
         state.mark_token_consumed(payload["jti"])
         return _render_result("Vielen Dank!", "Deine Bestätigung wurde gespeichert.")
 
