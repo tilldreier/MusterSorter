@@ -312,6 +312,15 @@ def assign_batch_photos(batch_id):
     if rotex_nummer and not clickup_ops.get_rotex_nummer(task):
         clickup_ops.set_custom_field(task_id, clickup_ops.FIELD_ID_ROTEX_NUMMER, rotex_nummer)
 
+    # Beim Uebergang zu "Muster Erhalten" wird die Rotex-Nummer auch im
+    # Tasknamen sichtbar gemacht - Kondition (statt bedingungslosem Anhaengen)
+    # verhindert doppeltes Anhaengen, falls dieser Task je nochmal hier
+    # durchlaeuft.
+    final_rotex_nummer = rotex_nummer or clickup_ops.get_rotex_nummer(task)
+    name_suffix = f" / Dirty-{final_rotex_nummer}"
+    if final_rotex_nummer and name_suffix not in task["name"]:
+        clickup_ops.set_task_name(task_id, task["name"] + name_suffix)
+
     clickup_ops.set_task_status(task_id, CFG["clickup_status_done"])
 
     sharepoint_folder, sharepoint_error = clickup_ops.resolve_sharepoint_folder(task)

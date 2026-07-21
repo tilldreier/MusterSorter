@@ -197,6 +197,15 @@ def post_comment(task_id, comment_text):
               f"({resp.status_code}): {resp.text}")
 
 
+def set_task_name(task_id, name):
+    url = f"{CLICKUP_API_BASE}/task/{task_id}"
+    payload = {"name": name}
+    resp = requests.put(url, headers=HEADERS, json=payload)
+    if resp.status_code not in (200, 201):
+        print(f"  WARNUNG: Taskname konnte nicht auf '{name}' gesetzt werden "
+              f"({resp.status_code}): {resp.text}")
+
+
 def set_task_status(task_id, status_name):
     url = f"{CLICKUP_API_BASE}/task/{task_id}"
     payload = {"status": status_name}
