@@ -104,6 +104,7 @@ INDEX_TEMPLATE = """
   .meta { color: #666; font-size: 0.9em; }
   a.button, button { display: inline-block; background: #00a0e3; color: white; border: none;
     padding: 0.6em 1.2em; border-radius: 6px; text-decoration: none; cursor: pointer; font-size: 1em; }
+  button.ignore { background: #999; }
 </style></head>
 <body>
 <h1>Muster Sorter</h1>
@@ -113,9 +114,15 @@ INDEX_TEMPLATE = """
 {% if fetch_message %}<p><strong>{{ fetch_message }}</strong></p>{% endif %}
 <h2>Offene Musterfotos</h2>
 {% if not open_batches %}<p>Keine offenen Musterfotos - alles einsortiert.</p>{% endif %}
+{% if open_batches %}
+  <form method="post" action="{{ url_for('ignore_all_open_batches') }}"
+        onsubmit="return confirm('Wirklich ALLE {{ open_batches|length }} offenen Batches ignorieren? Das kann nicht rueckgaengig gemacht werden.');">
+    <button type="submit" class="ignore">Alle offenen Fotos ignorieren</button>
+  </form>
+{% endif %}
 {% for batch_id, b in open_batches %}
   <div class="batch">
-    <h3><a href="{{ url_for('batch_detail', batch_id=batch_id) }}">{{ b.subject }}</a></h3>
+    <h3><a href="{{ url_for('batch_detail', batch_id=batch_id) }}">{{ b.subject or "(kein Betreff)" }}</a></h3>
     <div class="meta">{{ b.received }} - Rotex-Nr.: {{ b.rotex_nummer or "unbekannt" }} -
       {{ pending_counts[batch_id] }} noch offen</div>
   </div>
@@ -353,6 +360,17 @@ def ignore_batch_photos(batch_id):
     for filename, _ in _pending_photos(batch):
         state.resolve_photo(batch_id, filename, "ignored")
     return redirect(url_for("batch_detail", batch_id=batch_id))
+
+
+@app.route("/ignore-all", methods=["POST"])
+def ignore_all_open_batches():
+    """Leert die "Offene Musterfotos"-Liste auf einen Schlag - fuer den Fall,
+    dass sich dort Batches von laengst anderweitig abgearbeiteten Mails
+    angesammelt haben (z.B. weil der Link im Betreff unsichtbar war)."""
+    for batch_id, batch in _open_batches():
+        for filename, _ in _pending_photos(batch):
+            state.resolve_photo(batch_id, filename, "ignored")
+    return redirect(url_for("index", msg="Alle offenen Musterfotos wurden ignoriert."))
 
 
 if __name__ == "__main__":
